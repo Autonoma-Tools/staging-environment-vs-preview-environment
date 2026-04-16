@@ -1,0 +1,15 @@
+{
+  "name": "staging-environment-vs-preview-environment",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Companion code for the Autonoma blog post 'Staging Environment vs Preview Environment: Which One Do You Actually Need?'.",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.47.0"
+  }
+}

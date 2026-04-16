@@ -1,0 +1,96 @@
+# .github/workflows/playwright-preview.yml
+#
+# Runs the Playwright suite against a Vercel preview deployment as soon as
+# Vercel reports the preview is live. Listens for `deployment_status` events,
+# filters down to successful Preview deployments, then uses the deployment
+# URL as BASE_URL for the test run.
+#
+# Setup:
+#   1. Drop this file into `.github/workflows/` of a repo connected to Vercel.
+#   2. If your Vercel project has Deployment Protection enabled, add the
+#      bypass secret to GitHub:
+#        Settings -> Secrets and variables -> Actions -> New repository secret
+#        Name:  VERCEL_AUTOMATION_BYPASS_SECRET
+#        Value: (copy from Vercel project -> Settings -> Deployment Protection)
+#      Playwright then sends it as `x-vercel-protection-bypass` so the
+#      preview is reachable without a login redirect.
+#   3. Make sure your repo has `@playwright/test` installed and a
+#      `playwright.config.ts` (or .js) at the root.
+name: Playwright (Vercel Preview)
+
+on:
+  deployment_status:
+
+jobs:
+  e2e:
+    # Only run for successful Preview deployments. Vercel fires this event
+    # multiple times per deployment (queued, building, ready); we want the
+    # final `success` state for the Preview environment only.
+    if: >-
+      github.event.deployment_status.state == 'success' &&
+      github.event.deployment_status.environment == 'Preview'
+
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 20
+
+    env:
+      # The preview URL Vercel just promoted to "Ready".
+      BASE_URL: ${{ github.event.deployment_status.environment_url }}
+      # Optional: bypass header value for protected previews. Leave the
+      # secret empty if your project is public.
+      VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+
+    steps:
+      - name: Checkout the commit that produced this preview
+        uses: actions/checkout@v4
+        with:
+          # The deployment event carries the SHA Vercel built; check that
+          # exact commit out so the tests match the deployed code.
+          ref: ${{ github.event.deployment_status.deployment.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Wait for preview to respond
+        # Vercel reports `success` the moment the build is promoted, but
+        # the edge sometimes needs a few seconds to start serving. Poll
+        # until we get any 2xx/3xx response or give up after 60s.
+        run: |
+          set -e
+          for i in $(seq 1 30); do
+            status=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "x-vercel-protection-bypass: ${VERCEL_AUTOMATION_BYPASS_SECRET}" \
+              "${BASE_URL}")
+            echo "Attempt ${i}: ${BASE_URL} -> HTTP ${status}"
+            if [ "${status}" -ge 200 ] && [ "${status}" -lt 400 ]; then
+              echo "Preview is responding."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Preview never became reachable." >&2
+          exit 1
+
+      - name: Run Playwright tests against preview
+        run: npx playwright test
+        env:
+          BASE_URL: ${{ env.BASE_URL }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ env.VERCEL_AUTOMATION_BYPASS_SECRET }}
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
